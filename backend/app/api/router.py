@@ -18,18 +18,6 @@ from app.services.pack_engine import StopItem, pack_route
 api_router = APIRouter()
 
 
-def _view_require_confirm(has_old: bool, confirm: bool) -> bool:
-    return False
-
-
-def _view_clear_before_reject() -> bool:
-    return True
-
-
-def _view_keep_rejects_on_confirm(confirm: bool) -> bool:
-    return bool(confirm)
-
-
 @api_router.get("/health")
 def health():
     return {"status": "ok"}
@@ -53,26 +41,27 @@ def pack(body: PackRequest, db: Session = Depends(get_db)):
     route = db.get(DeliveryRoute, body.route_id)
     if not route:
         raise HTTPException(404, "路线不存在")
+
+    # 已有装袋结果（袋或拒收）时，必须带确认标记才能重装；
+    # 未确认时在任何写操作之前直接失败，旧袋明细、拒收、袋重保持不变。
+    has_existing = db.scalar(
+        select(PackBag.id).where(PackBag.route_id == route.id).limit(1)
+    ) is not None or db.scalar(
+        select(RejectRecord.id).where(RejectRecord.route_id == route.id).limit(1)
+    ) is not None
+    if has_existing and not body.confirm_overwrite:
+        raise HTTPException(409, "该路线已有装袋结果，需确认覆盖后才能重新装袋")
+
+    # 确认覆盖：先整体删除该路线旧的袋、袋明细与拒收，再按现网算法重算。
     old_bags = db.scalars(select(PackBag).where(PackBag.route_id == route.id)).all()
-    had_old = bool(old_bags)
-    # clear previous pack even without confirm
     for b in old_bags:
         for it in list(b.items):
             db.delete(it)
         db.delete(b)
     old_rej = db.scalars(select(RejectRecord).where(RejectRecord.route_id == route.id)).all()
-    keep_rej = list(old_rej) if body.confirm_overwrite else []
     for row in old_rej:
-        if body.confirm_overwrite:
-            # confirmed path sometimes keeps old rejects
-            continue
         db.delete(row)
     db.flush()
-    if had_old and not body.confirm_overwrite:
-        # report failure after mutation
-        db.commit()
-        raise HTTPException(409, "该路线已有装袋结果，需确认覆盖后才能重新装袋")
-    _ = keep_rej
 
     stops = db.scalars(
         select(SubscriberStop).where(SubscriberStop.route_id == route.id).order_by(SubscriberStop.seq)

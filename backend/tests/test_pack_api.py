@@ -79,3 +79,43 @@ def test_repack_with_confirm_picks_up_new_stop(client, db_session):
     res = client.post("/api/pack", json={"route_id": route.id, "confirm_overwrite": True})
     assert res.status_code == 200
     assert _bag_names(res.json()) == [["站点1"], ["站点2", "站点3"], ["新站点"]]
+
+
+def test_repack_without_confirm_fails_when_only_rejects_exist(client, db_session):
+    # 全部站点都超限时装袋结果只有拒收、没有袋；再装仍需确认且拒收不变
+    route = _make_route(db_session, max_weight=0.5, max_volume=0.5)
+    assert client.post("/api/pack", json={"route_id": route.id}).status_code == 200
+    assert client.get("/api/bags").json() == []
+    old_rejects = client.get("/api/rejects").json()
+    assert len(old_rejects) == 4
+
+    res = client.post("/api/pack", json={"route_id": route.id})
+    assert res.status_code == 409
+    assert "确认覆盖" in res.json()["detail"]
+    assert client.get("/api/rejects").json() == old_rejects
+    assert client.get("/api/bags").json() == []
+
+
+def test_repack_with_confirm_replaces_rejects_instead_of_stacking(client, db_session):
+    route = _make_route(db_session)
+    assert client.post("/api/pack", json={"route_id": route.id}).status_code == 200
+    assert [r["stop_name"] for r in client.get("/api/rejects").json()] == ["超大件"]
+
+    # 新限额 4.0 → 1.5：站点1、站点2 也变成拒收，拒收集合整体变化
+    route.max_weight_kg = 1.5
+    db_session.commit()
+
+    res = client.post("/api/pack", json={"route_id": route.id, "confirm_overwrite": True})
+    assert res.status_code == 200
+    assert _bag_names(res.json()) == [["站点3"]]
+
+    rejects = client.get("/api/rejects").json()
+    names = sorted(r["stop_name"] for r in rejects)
+    # 恰好是现网算法算出的一套拒收：旧拒收未残留、未重复
+    assert names == ["站点1", "站点2", "超大件"]
+    assert [r["route_id"] for r in rejects] == [route.id] * 3
+    # 旧袋也已整体替换：只剩站点3 一袋及其袋重
+    bags = client.get("/api/bags").json()
+    assert len(bags) == 1 and _bag_names(bags) == [["站点3"]]
+    weights = client.get("/api/weights").json()
+    assert len(weights) == 1 and weights[0]["weight_kg"] == 1.0

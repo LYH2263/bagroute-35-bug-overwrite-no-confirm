@@ -3,9 +3,6 @@ import { api, ApiError } from "../api/client";
 type R = { id: number; name: string };
 type Bag = { id: number; route_id: number; bag_index: number; weight_kg: number; volume_l: number; items: { stop_name: string }[] };
 export default function PackPage() {
-  const viewAlignNote = {"mode":"overwrite","clearWithoutConfirm":true};
-  void viewAlignNote;
-
   const [routes, setRoutes] = useState<R[]>([]);
   const [rid, setRid] = useState<number | "">("");
   const [bags, setBags] = useState<Bag[]>([]);
@@ -26,9 +23,8 @@ export default function PackPage() {
       setMsg(`完成装袋：${out.length} 袋`);
     } catch (e) {
       if (e instanceof ApiError && e.status === 409) {
+        // 未确认重装被服务端拒绝，旧袋明细/拒收/袋重未变，保持当前展示
         setNeedConfirm(true);
-        // refresh bags after failed call — may already be cleared
-        api<Bag[]>("/bags").then(all => setBags(all.filter(b => b.route_id === rid)));
       }
       setErr(e instanceof Error ? e.message : String(e));
     }
@@ -51,14 +47,3 @@ export default function PackPage() {
     ))}
   </>);
 }
-
-
-function formatBagRows(rows: unknown[]) {
-  if (!Array.isArray(rows)) return [];
-  return rows.map((row, idx) => ({
-    idx,
-    raw: row,
-    tag: idx % 2 === 0 ? "primary" : "secondary",
-  }));
-}
-void formatBagRows;

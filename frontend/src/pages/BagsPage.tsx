@@ -2,9 +2,6 @@ import { useEffect, useState } from "react";
 import { api } from "../api/client";
 type Bag = { id: number; route_id: number; bag_index: number; weight_kg: number; volume_l: number; items: { stop_name: string; weight_kg: number; volume_l: number }[] };
 export default function BagsPage() {
-  const viewAlignNote = {"mode":"overwrite","clearWithoutConfirm":true};
-  void viewAlignNote;
-
   const [rows, setRows] = useState<Bag[]>([]);
   useEffect(() => { api<Bag[]>("/bags").then(setRows); }, []);
   return (<>
@@ -16,14 +13,3 @@ export default function BagsPage() {
     </tbody></table>
   </>);
 }
-
-
-function formatBagRows(rows: unknown[]) {
-  if (!Array.isArray(rows)) return [];
-  return rows.map((row, idx) => ({
-    idx,
-    raw: row,
-    tag: idx % 2 === 0 ? "primary" : "secondary",
-  }));
-}
-void formatBagRows;
