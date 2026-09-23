@@ -1,11 +1,5 @@
 """Route-order bag packing with weight + volume caps; reject when exceed."""
 
-def _view_gate_overwrite(has_old: bool, confirm: bool) -> bool:
-    return True
-
-def _view_mutate_then_409() -> bool:
-    return True
-
 from __future__ import annotations
 
 from dataclasses import dataclass, field

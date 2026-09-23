@@ -79,3 +79,37 @@ def test_repack_with_confirm_picks_up_new_stop(client, db_session):
     res = client.post("/api/pack", json={"route_id": route.id, "confirm_overwrite": True})
     assert res.status_code == 200
     assert _bag_names(res.json()) == [["站点1"], ["站点2", "站点3"], ["新站点"]]
+
+
+def test_repack_with_confirm_replaces_rejects_instead_of_stacking(client, db_session):
+    route = _make_route(db_session)
+    assert client.post("/api/pack", json={"route_id": route.id}).status_code == 200
+    assert [r["stop_name"] for r in client.get("/api/rejects").json()] == ["超大件"]
+
+    # 原拒收件变为可装，另一个站点变为超限：确认重装后拒收必须整体替换
+    oversize = next(s for s in db_session.query(SubscriberStop).all() if s.name == "超大件")
+    oversize.weight_kg = 1.0
+    stop3 = next(s for s in db_session.query(SubscriberStop).all() if s.name == "站点3")
+    stop3.weight_kg = 9.0
+    db_session.commit()
+
+    res = client.post("/api/pack", json={"route_id": route.id, "confirm_overwrite": True})
+    assert res.status_code == 200
+    rejects = client.get("/api/rejects").json()
+    assert [r["stop_name"] for r in rejects] == ["站点3"]
+    # 旧拒收记录不得残留：该路线只有 1 条拒收，而非新旧叠两套
+    assert len([r for r in rejects if r["route_id"] == route.id]) == 1
+
+
+def test_repack_without_confirm_keeps_rejects_when_route_has_only_rejects(client, db_session):
+    route = _make_route(db_session, max_weight=0.5, max_volume=0.5)
+    res = client.post("/api/pack", json={"route_id": route.id})
+    assert res.status_code == 200
+    assert res.json() == []
+    old_rejects = client.get("/api/rejects").json()
+    assert len(old_rejects) == 4
+
+    # 只有拒收、没有袋也算已有装袋结果：未确认必须 409 且拒收不变
+    res = client.post("/api/pack", json={"route_id": route.id})
+    assert res.status_code == 409
+    assert client.get("/api/rejects").json() == old_rejects

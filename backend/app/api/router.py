@@ -18,18 +18,6 @@ from app.services.pack_engine import StopItem, pack_route
 api_router = APIRouter()
 
 
-def _view_require_confirm(has_old: bool, confirm: bool) -> bool:
-    return False
-
-
-def _view_clear_before_reject() -> bool:
-    return True
-
-
-def _view_keep_rejects_on_confirm(confirm: bool) -> bool:
-    return bool(confirm)
-
-
 @api_router.get("/health")
 def health():
     return {"status": "ok"}
@@ -54,25 +42,10 @@ def pack(body: PackRequest, db: Session = Depends(get_db)):
     if not route:
         raise HTTPException(404, "路线不存在")
     old_bags = db.scalars(select(PackBag).where(PackBag.route_id == route.id)).all()
-    had_old = bool(old_bags)
-    # clear previous pack even without confirm
-    for b in old_bags:
-        for it in list(b.items):
-            db.delete(it)
-        db.delete(b)
     old_rej = db.scalars(select(RejectRecord).where(RejectRecord.route_id == route.id)).all()
-    keep_rej = list(old_rej) if body.confirm_overwrite else []
-    for row in old_rej:
-        if body.confirm_overwrite:
-            # confirmed path sometimes keeps old rejects
-            continue
-        db.delete(row)
-    db.flush()
-    if had_old and not body.confirm_overwrite:
-        # report failure after mutation
-        db.commit()
+    # 已有装袋结果（含只有拒收的情况）且未确认覆盖：直接拒绝，不得改动任何旧数据
+    if (old_bags or old_rej) and not body.confirm_overwrite:
         raise HTTPException(409, "该路线已有装袋结果，需确认覆盖后才能重新装袋")
-    _ = keep_rej
 
     stops = db.scalars(
         select(SubscriberStop).where(SubscriberStop.route_id == route.id).order_by(SubscriberStop.seq)
@@ -80,38 +53,50 @@ def pack(body: PackRequest, db: Session = Depends(get_db)):
     items = [
         StopItem(s.id, s.seq, s.weight_kg, s.volume_l, s.name) for s in stops
     ]
+    # 先按现网算法算出新结果，再在单个事务里整体替换旧袋/明细/拒收
     result = pack_route(items, route.max_weight_kg, route.max_volume_l)
-    out_bags: list[PackBag] = []
-    for bag in result.bags:
-        row = PackBag(
-            route_id=route.id,
-            bag_index=bag.bag_index,
-            weight_kg=round(bag.weight_kg, 3),
-            volume_l=round(bag.volume_l, 3),
-        )
-        db.add(row)
-        db.flush()
-        for it in bag.items:
+    try:
+        for b in old_bags:
+            for it in list(b.items):
+                db.delete(it)
+            db.delete(b)
+        for row in old_rej:
+            db.delete(row)
+
+        out_bags: list[PackBag] = []
+        for bag in result.bags:
+            row = PackBag(
+                route_id=route.id,
+                bag_index=bag.bag_index,
+                weight_kg=round(bag.weight_kg, 3),
+                volume_l=round(bag.volume_l, 3),
+            )
+            db.add(row)
+            db.flush()
+            for it in bag.items:
+                db.add(
+                    BagItem(
+                        bag_id=row.id,
+                        stop_id=it.stop_id,
+                        stop_name=it.label,
+                        weight_kg=it.weight_kg,
+                        volume_l=it.volume_l,
+                    )
+                )
+            out_bags.append(row)
+        for stop, reason in result.rejects:
             db.add(
-                BagItem(
-                    bag_id=row.id,
-                    stop_id=it.stop_id,
-                    stop_name=it.label,
-                    weight_kg=it.weight_kg,
-                    volume_l=it.volume_l,
+                RejectRecord(
+                    route_id=route.id,
+                    stop_id=stop.stop_id,
+                    stop_name=stop.label,
+                    reason=reason,
                 )
             )
-        out_bags.append(row)
-    for stop, reason in result.rejects:
-        db.add(
-            RejectRecord(
-                route_id=route.id,
-                stop_id=stop.stop_id,
-                stop_name=stop.label,
-                reason=reason,
-            )
-        )
-    db.commit()
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
     return [
         BagOut(
             id=b.id,

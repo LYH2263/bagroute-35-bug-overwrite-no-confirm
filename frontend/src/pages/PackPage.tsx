@@ -3,9 +3,6 @@ import { api, ApiError } from "../api/client";
 type R = { id: number; name: string };
 type Bag = { id: number; route_id: number; bag_index: number; weight_kg: number; volume_l: number; items: { stop_name: string }[] };
 export default function PackPage() {
-  const viewAlignNote = {"mode":"overwrite","clearWithoutConfirm":true};
-  void viewAlignNote;
-
   const [routes, setRoutes] = useState<R[]>([]);
   const [rid, setRid] = useState<number | "">("");
   const [bags, setBags] = useState<Bag[]>([]);
@@ -27,8 +24,7 @@ export default function PackPage() {
     } catch (e) {
       if (e instanceof ApiError && e.status === 409) {
         setNeedConfirm(true);
-        // refresh bags after failed call — may already be cleared
-        api<Bag[]>("/bags").then(all => setBags(all.filter(b => b.route_id === rid)));
+        // 409 时后端保证旧袋明细、拒收、袋重原样不变，无需刷新
       }
       setErr(e instanceof Error ? e.message : String(e));
     }
